@@ -134,6 +134,8 @@ def parameterize_ray(M, o, d):
     return A, B
 
 def draw_patches(patches, n=10):
+    ''' Draws a set of B-rep patches as a point cloud
+    '''
     fig = plt.figure()
     ax = fig.add_subplot(projection='3d')
     bounds = []
@@ -155,12 +157,15 @@ def draw_patches(patches, n=10):
     ax.set_zlim(centers[2] - scale, centers[2] + scale)
     plt.show()
 
-with open('teapot.bpt') as f:
-    patches = parse_bpt(f.read())
-
 def reduce_pencil_easy(A, B):
-    while np.linalg.matrix_rank(B) != B.shape[1]:
+    ''' oh no how did I get here I'm not good with computer
+    '''
+    while True:
         (u1, e1, vt1) = np.linalg.svd(B)
+        tol = e1.max(axis=-1, keepdims=True) * max(B.shape[-2:]) * np.core.finfo(e1.dtype).eps
+        if np.sum(e1 > tol) == B.shape[1]:
+            break
+
         bv1 = np.matmul(B, vt1.T)
         i = np.min(np.where(np.max(np.abs(bv1), axis=0) < 1e-8))
         av1 = np.matmul(A, vt1.T)
@@ -176,6 +181,8 @@ def reduce_pencil_easy(A, B):
         j = mask[1][0]
         A = A[i:,:j]
         B = B[i:,:j]
+        if len(B.ravel()) == 0:
+            return False
     if B.shape[0] == B.shape[1]:
         return A, B
     else:
@@ -215,9 +222,122 @@ def preimages(M, P):
     else:
         return False
 
+def raytrace(ray_origin, ray_dir, implicit_patches):
+    ''' Raytraces from the origin in the given direction, finding the
+        nearest collision against a set of implicit patches.
+    '''
+    min_dist = 1e12
+    hit_index = None
+    hit_uv = None
+
+    if isinstance(ray_origin, list):
+        ray_origin = np.array(ray_origin)
+    if isinstance(ray_dir, list):
+        ray_dir = np.array(ray_dir)
+
+    for (i, (M, bounds_min, bounds_max)) in enumerate(implicit_patches):
+        box_dist = ray_box(ray_origin, ray_dir, bounds_min, bounds_max)
+        if box_dist is None or box_dist > min_dist:
+            continue
+
+        eigs = pencil_eigenvalues(*parameterize_ray(M, ray_origin, ray_dir))
+        for e in eigs:
+            # Skip imaginary points points
+            if abs(e.imag) > 1e-8:
+                continue
+
+            # Skip points that are farther than our nearest existing hit
+            dist = -e.real
+            if dist < 0:
+                continue
+            if dist > min_dist:
+                continue
+            pt = ray_origin + ray_dir * dist
+
+            # Skip points that are outside the patch bounding box
+            if not np.all((pt >= bounds_min) * (pt <= bounds_max)):
+                continue
+
+            uv = preimages(M, pt)
+            if uv is False:
+                continue
+
+            # We've found a hit, a palpable hit!
+            min_dist = dist
+            hit_index = i
+            hit_uv = uv
+    return min_dist, hit_index, hit_uv
+
+import ctypes
+raybox_lib = ctypes.cdll.LoadLibrary('raybox.dylib')
+DOUBLE_PTR = ctypes.POINTER(ctypes.c_double)
+raybox_lib.ray_box.argtypes = [DOUBLE_PTR]*5
+raybox_lib.ray_box.restype = ctypes.c_bool
+
+def ray_box(ray_origin, ray_dir, box_min, box_max):
+    ''' Checks a ray-box intersection.  Returns (distance, hit position),
+        which are both None if no intersection occurs.
+    '''
+    res = ctypes.c_double(0.0)
+    assert(ray_origin.dtype == np.float64)
+    assert(ray_dir.dtype == np.float64)
+    assert(box_min.dtype == np.float64)
+    assert(box_max.dtype == np.float64)
+    out = raybox_lib.ray_box(
+        ctypes.cast(ray_origin.ctypes.data, DOUBLE_PTR),
+        ctypes.cast(ray_dir.ctypes.data, DOUBLE_PTR),
+        ctypes.cast(box_min.ctypes.data, DOUBLE_PTR),
+        ctypes.cast(box_max.ctypes.data, DOUBLE_PTR),
+        res)
+    if out:
+        return res.value
+    else:
+        return None
+
+def prepare(patches):
+    ''' Packs a set of explicit patches into tuples
+            (implicit patch, min, max)
+        Returns a list of said tuples
+    '''
+    out = []
+    for p in patches:
+        M = build_M(p)
+
+        bounds_min = p.reshape(-1, 3).min(axis=0)
+        bounds_max = p.reshape(-1, 3).max(axis=0)
+        out.append((M, bounds_min, bounds_max))
+    return out
+
+with open('teapot.bpt') as f:
+    patches = parse_bpt(f.read())
+implicit_patches = prepare(patches)
+
+camera_pos = np.array([3,3,3])
+camera_look = np.array([0.07,0.1,1])
+camera_dir = camera_look - camera_pos
+camera_dir = camera_dir / np.linalg.norm(camera_dir)
+camera_up = np.array([0,0,1])
+camera_x = np.cross(camera_dir, camera_up)
+camera_x = camera_x / np.linalg.norm(camera_x)
+camera_scale = 6
+out = np.zeros((200, 200))
+for x in range(out.shape[0]):
+    print("{}/{}".format(x + 1, out.shape[0]))
+    for y in range(out.shape[1]):
+        pos = camera_pos + \
+            camera_x * (x/out.shape[0] - 0.5) * camera_scale + \
+            camera_up * (y/out.shape[1] - 0.5) * camera_scale
+        dist, index, uv = raytrace(pos, camera_dir, implicit_patches)
+        if index is not None:
+            out[out.shape[0] - y - 1, x] = dist
+
+
+################################################################################
+'''
 #draw_patches(patches)
 
 b = np.array([[[1,0,0],[1,0,1],[0,0,1]],[[1,1,0],[1,1,1],[0,1,0]],[[1,1,2],[1,2,2],[0,2,2]]])
+
 #patches = [b]
 #b = patches[0]
 #draw_patches([b], 40)
@@ -247,8 +367,6 @@ for (i,b) in enumerate(patches):
                 print(pt)
     print()
 
-################################################################################
-'''
 import matplotlib.pyplot as plt
 fig = plt.figure()
 ax = fig.add_subplot(projection='3d')
