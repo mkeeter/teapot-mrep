@@ -339,7 +339,8 @@ def raytrace(ray_origin, ray_dir, implicit_patches):
 
 # C function to accelerate ray-box testing
 import ctypes
-raybox_lib = ctypes.cdll.LoadLibrary('raybox.dylib')
+from ctypes.util import find_library
+raybox_lib = ctypes.cdll.LoadLibrary(find_library('raybox'))
 DOUBLE_PTR = ctypes.POINTER(ctypes.c_double)
 raybox_lib.ray_box.argtypes = [DOUBLE_PTR]*5
 raybox_lib.ray_box.restype = ctypes.c_bool
