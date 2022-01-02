@@ -316,16 +316,19 @@ camera_up = np.array([0,0,1])
 camera_x = np.cross(camera_dir, camera_up)
 camera_x = camera_x / np.linalg.norm(camera_x)
 camera_scale = 6
-out = np.zeros((200, 200))
-for x in range(out.shape[0]):
-    print("{}/{}".format(x + 1, out.shape[0]))
-    for y in range(out.shape[1]):
+image_size = 200
+out_dist = np.zeros((image_size, image_size), dtype=np.float64)
+out_rgb = np.zeros((image_size, image_size, 3), dtype=np.float64)
+for x in range(out_dist.shape[0]):
+    print("{}/{}".format(x + 1, out_dist.shape[0]))
+    for y in range(out_dist.shape[1]):
         pos = camera_pos + \
-            camera_x * (x/out.shape[0] - 0.5) * camera_scale + \
-            camera_up * (y/out.shape[1] - 0.5) * camera_scale
+            camera_x * (x/out_dist.shape[0] - 0.5) * camera_scale + \
+            camera_up * (y/out_dist.shape[1] - 0.5) * camera_scale
         dist, index, uv = raytrace(pos, camera_dir, implicit_patches)
         if index is not None:
-            out[out.shape[0] - y - 1, x] = dist
+            out_dist[out_dist.shape[0] - y - 1, x] = dist
+            out_rgb[out_dist.shape[0] - y - 1, x,:] = [uv[0], uv[1], 0]
 
 
 ################################################################################
