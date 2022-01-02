@@ -14,21 +14,6 @@ def bernstein(i, degree, u):
     '''
     return comb(degree, i) * np.power(u, i) * np.power(1 - u, degree - i)
 
-def sample_curve(b, n=100):
-    ''' Samples a Bezier curve
-
-        b = sample points (shape is [degree + 1, dimension])
-        n = number of points to generate (in the range 0,1)
-    '''
-    degree = b.shape[0] - 1
-    dimension = b.shape[1]
-    u = np.linspace(0, 1, n)
-    out = np.zeros([n, dimension])
-    for i in range(degree + 1):
-        bs = bernstein(i, degree, u).reshape(-1,1)
-        out += np.hstack([bs] * dimension) * np.vstack([b[i,:]] * n)
-    return out
-
 def sample_surface(b, n=10, u=None, v=None):
     ''' Samples a Bezier surface
 
@@ -235,11 +220,18 @@ def raytrace(ray_origin, ray_dir, implicit_patches):
     if isinstance(ray_dir, list):
         ray_dir = np.array(ray_dir)
 
+    targets = []
     for (i, (M, bounds_min, bounds_max)) in enumerate(implicit_patches):
         box_dist = ray_box(ray_origin, ray_dir, bounds_min, bounds_max)
-        if box_dist is None or box_dist > min_dist:
+        if box_dist is None:
             continue
+        else:
+            targets.append((box_dist, i, M, bounds_min, bounds_max))
+    targets.sort()
 
+    for (box_dist, index, M, bounds_min, bounds_max) in targets:
+        if box_dist > min_dist:
+            continue
         eigs = pencil_eigenvalues(*parameterize_ray(M, ray_origin, ray_dir))
         for e in eigs:
             # Skip imaginary points points
@@ -264,7 +256,7 @@ def raytrace(ray_origin, ray_dir, implicit_patches):
 
             # We've found a hit, a palpable hit!
             min_dist = dist
-            hit_index = i
+            hit_index = index
             hit_uv = uv
     return min_dist, hit_index, hit_uv
 
