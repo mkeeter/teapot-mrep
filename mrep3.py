@@ -202,7 +202,8 @@ def preimages(M, P):
     # Hard-coded ratios based on the v used for our patches
     u = n[1] / (2*n[0] + n[1])
     v = n[3] / (5*n[0] + n[3])
-    if u >= 0 and u <= 1 and v >= 0 and v <= 1:
+    eps = 1e-8
+    if u >= -eps and u <= 1 + eps and v >= -eps and v <= 1 + eps:
         return (u, v)
     else:
         return False
@@ -219,6 +220,8 @@ def raytrace(ray_origin, ray_dir, implicit_patches):
         ray_origin = np.array(ray_origin)
     if isinstance(ray_dir, list):
         ray_dir = np.array(ray_dir)
+
+    eps = 1e-8
 
     targets = []
     for (i, (M, bounds_min, bounds_max)) in enumerate(implicit_patches):
@@ -247,7 +250,7 @@ def raytrace(ray_origin, ray_dir, implicit_patches):
             pt = ray_origin + ray_dir * dist
 
             # Skip points that are outside the patch bounding box
-            if not np.all((pt >= bounds_min) * (pt <= bounds_max)):
+            if not np.all((pt >= bounds_min - eps) * (pt <= bounds_max + eps)):
                 continue
 
             uv = preimages(M, pt)
@@ -260,6 +263,7 @@ def raytrace(ray_origin, ray_dir, implicit_patches):
             hit_uv = uv
     return min_dist, hit_index, hit_uv
 
+# C function to accelerate ray-box testing
 import ctypes
 raybox_lib = ctypes.cdll.LoadLibrary('raybox.dylib')
 DOUBLE_PTR = ctypes.POINTER(ctypes.c_double)
