@@ -14,6 +14,24 @@ def bernstein(i, degree, u):
     '''
     return comb(degree, i) * np.power(u, i) * np.power(1 - u, degree - i)
 
+def bernstein_deriv(i, degree, u):
+    ''' Returns the first derivative Berstein polynomial
+
+        i = polynomial number
+        degree = degree
+        u = sample points
+    '''
+
+    if i:
+        a = i * np.power(u, i - 1) * np.power(1 - u, degree - i)
+    else:
+        a = 0
+    if degree - i:
+        b = -np.power(u, i) * (degree - i) * np.power(1 - u, degree - i - 1)
+    else:
+        b = 0
+    return comb(degree, i) * (a + b)
+
 def sample_surface(b, n=10, u=None, v=None):
     ''' Samples a Bezier surface
 
@@ -42,6 +60,62 @@ def sample_surface(b, n=10, u=None, v=None):
                 s[:,:,k] *= b[i,j,k]
             out += s
     return out
+
+def surface_derivs(b, n=10, u=None, v=None):
+    degree1 = b.shape[0] - 1
+    degree2 = b.shape[1] - 1
+    dimension = b.shape[2]
+
+    '''
+    S(u, v) = sum_i^n ( sum_j^m ( B_i^n(u) * B_j^m(v) * P_ij )
+            = sum_i^n ( sum_j^m ( comb(n, i) * u^i * (1 - u)^(n - i) * B_j^m(v) * P_ij )
+
+      u^i * (1 - u)^(n - i)
+      i * u^(i-1) * (1 - u)^(n - i) + u^i (d/du (1-u)^(n - i))
+      i * u^(i-1) * (1 - u)^(n - i) + u^i (d/du (1-u)^(n - i))
+      i * u^(i-1) * (1 - u)^(n - i) - u^i (n - i) (1-u)^(n - i - 1)
+      (1 - u) * i * u^(i-1) * (1 - u)^(n - i - 1) - u^i (n - i) (1-u)^(n - i - 1)
+      ((1 - u) * i - u *  (n - i)) u^(i - 1) (1-u)^(n - i - 1)
+      ((i - ui - un + iu) u^(i - 1) (1-u)^(n - i - 1)
+      ((i  - un) u^(i - 1) (1-u)^(n - i - 1)
+
+      u^(i-1) * (1 - u)^(n - i - 1) * (i - n * u)
+
+
+      dS/du = sum_i^n ( sum_j^m ( comb(n, i) * u^i * (1 - u)^(n - i) * B_j^m(v) * P_ij )
+    '''
+
+    if u is None:
+        u = np.linspace(0, 1, n)
+    elif isinstance(u, float):
+        u = np.array([u])
+    if v is None:
+        v = np.linspace(0, 1, n)
+    elif isinstance(v, float):
+        v = np.array([v])
+
+    d_du = np.zeros([len(u), len(v), dimension])
+    d_dv = np.zeros([len(u), len(v), dimension])
+    for i in range(degree1 + 1):
+        for j in range(degree1 + 1):
+            wu = bernstein_deriv(i, degree1, u)
+            wv = bernstein(j, degree1, v)
+            w = wu.reshape(-1,1).dot(wv.reshape(1,-1))
+            s = np.dstack([w] * dimension)
+            for k in range(dimension):
+                s[:,:,k] *= b[i,j,k]
+            d_du += s
+
+            wu = bernstein(i, degree1, u)
+            wv = bernstein_deriv(j, degree1, v)
+            w = wu.reshape(-1,1).dot(wv.reshape(1,-1))
+            s = np.dstack([w] * dimension)
+            for k in range(dimension):
+                s[:,:,k] *= b[i,j,k]
+            d_dv += s
+    norms = np.cross(d_dv.reshape(-1, 3), d_du.reshape(-1, 3))
+    return norms / np.linalg.norm(norms, axis=1).reshape(-1, 1)
+
 
 def parse_bpt(data):
     ''' Parses a BPT file, which is a primitive B-rep format
@@ -304,6 +378,8 @@ def prepare(patches):
         out.append((M, bounds_min, bounds_max))
     return out
 
+################################################################################
+
 with open('teapot.bpt') as f:
     patches = parse_bpt(f.read())
 implicit_patches = prepare(patches)
@@ -316,7 +392,7 @@ camera_up = np.array([0,0,1])
 camera_x = np.cross(camera_dir, camera_up)
 camera_x = camera_x / np.linalg.norm(camera_x)
 camera_scale = 6
-image_size = 200
+image_size = 400
 out_dist = np.zeros((image_size, image_size), dtype=np.float64)
 out_rgb = np.zeros((image_size, image_size, 3), dtype=np.float64)
 for x in range(out_dist.shape[0]):
@@ -328,7 +404,10 @@ for x in range(out_dist.shape[0]):
         dist, index, uv = raytrace(pos, camera_dir, implicit_patches)
         if index is not None:
             out_dist[out_dist.shape[0] - y - 1, x] = dist
-            out_rgb[out_dist.shape[0] - y - 1, x,:] = [uv[0], uv[1], 0]
+            norm = surface_derivs(patches[index], u=uv[1], v=uv[0])
+            out_rgb[out_dist.shape[0] - y - 1, x,:] = norm
+plt.imshow(out_rgb)
+plt.show()
 
 
 ################################################################################
