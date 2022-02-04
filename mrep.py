@@ -2,7 +2,7 @@ from math import comb
 import numpy as np
 from scipy.linalg import null_space
 
-def berstein(i, degree, u):
+def bernstein(i, degree, u):
     ''' Returns a Berstein polynomial
 
         i = polynomial number
@@ -11,19 +11,23 @@ def berstein(i, degree, u):
     '''
     return comb(degree, i) * np.power(u, i) * np.power(1 - u, degree - i)
 
-def sample_curve(b, n=100):
+def sample_curve(b, n=100, u=None):
     ''' Samples a Bezier curve
 
         b = sample points (shape is [degree + 1, dimension])
         n = number of points to generate (in the range 0,1)
+        u = point or points to sample at
     '''
     degree = b.shape[0] - 1
     dimension = b.shape[1]
-    u = np.linspace(0, 1, n)
-    out = np.zeros([n, dimension])
+    if u is None:
+        u = np.linspace(0, 1, n)
+    elif isinstance(u, float) or isinstance(u, int):
+        u = np.array([u], dtype=np.float64)
+    out = np.zeros([len(u), dimension])
     for i in range(degree + 1):
-        bs = berstein(i, degree, u).reshape(-1,1)
-        out += np.hstack([bs] * dimension) * np.vstack([b[i,:]] * n)
+        bs = bernstein(i, degree, u).reshape(-1,1)
+        out += np.hstack([bs] * dimension) * np.vstack([b[i,:]] * len(u))
     return out
 
 m = np.array([[0,0,0,0,0,0],[-1,1,-1,3/2,1/2,-1],[0,-1,0,-1,-1,0]])
@@ -41,9 +45,10 @@ def S_v(v, b):
     ''' Builds the S_v matrix using the B^v_j equation on p3
     '''
     degree = b.shape[0] - 1
+    dimension = b.shape[1]
 
-    out = np.zeros((degree + v + 1, 4 * (v + 1)))
-    for axis in range(b.shape[1] + 1):
+    out = np.zeros((degree + v + 1, (dimension + 1) * (v + 1)))
+    for axis in range(dimension + 1):
         if axis == 0:
             c = np.ones_like(b[:,axis])
         else:

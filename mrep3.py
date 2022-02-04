@@ -273,9 +273,20 @@ def preimages(M, P):
     # Use last column of SVD to approximate null space of M_v(P)^T
     (u,_,_) = np.linalg.svd(M(*P))
     n = u[:,-1]
+
     # Hard-coded ratios based on the v used for our patches
-    u = n[1] / (2*n[0] + n[1])
-    v = n[3] / (5*n[0] + n[3])
+    v = (5, 2)
+    # Use least-squares to robustly solve for parameters
+    A = np.hstack([v[1] * n[0::v[1]+1] + n[1::v[1]+1],
+                   v[1] * n[v[1]::v[1] + 1] + n[v[1] - 1::v[1] + 1]])
+    B = np.hstack([n[1::v[1] + 1], v[1] * n[v[1]::v[1] + 1]])
+    u = np.linalg.lstsq(A.reshape(-1, 1), B.reshape(-1, 1), rcond=None)[0][0]
+
+    A = np.hstack([v[0] * n[0:v[1] + 1] + n[v[1] + 1:2*(v[1] + 1)],
+                   v[0] * n[-v[1] - 1:] + n[-2*(v[1] + 1): -(v[1] + 1)]])
+    B = np.hstack([n[v[1] + 1:2*(v[1] + 1)], v[0] * n[-v[1] - 1:]])
+    v = np.linalg.lstsq(A.reshape(-1, 1), B.reshape(-1, 1), rcond=None)[0][0]
+
     eps = 1e-8
     if u >= -eps and u <= 1 + eps and v >= -eps and v <= 1 + eps:
         return (u, v)
@@ -409,70 +420,3 @@ for x in range(out_dist.shape[0]):
             out_rgb[out_dist.shape[0] - y - 1, x,:] = norm
 plt.imshow(out_rgb)
 plt.show()
-
-
-################################################################################
-'''
-#draw_patches(patches)
-
-b = np.array([[[1,0,0],[1,0,1],[0,0,1]],[[1,1,0],[1,1,1],[0,1,0]],[[1,1,2],[1,2,2],[0,2,2]]])
-
-#patches = [b]
-#b = patches[0]
-#draw_patches([b], 40)
-hits = []
-for (i,b) in enumerate(patches):
-    print(i)
-    M = build_M(b)
-
-    bounds_min = b.reshape(-1, 3).min(axis=0)
-    bounds_max = b.reshape(-1, 3).max(axis=0)
-
-    # Test one point
-    for i in range(10):
-        surf_point = sample_surface(b)[i,i]
-        preimages(M, surf_point)
-    surf_point = sample_surface(b)[8,8]
-    print("surf point:", surf_point)
-    ray_origin = np.copy(surf_point)
-    ray_dir = np.array([1,0,0])
-    ray_origin += ray_dir # add a little offset, as a treat
-    eigs = pencil_eigenvalues(*parameterize_ray(M, ray_origin, ray_dir))
-    for e in eigs:
-        if abs(e.imag) < 1e-8:
-            pt = ray_origin - ray_dir * e.real
-            if np.all((pt >= bounds_min) * (pt <= bounds_max)):
-                hits.append(pt)
-                print(pt)
-    print()
-
-import matplotlib.pyplot as plt
-fig = plt.figure()
-ax = fig.add_subplot(projection='3d')
-for p in patches:
-    M = build_M(p)
-    def check(x, y, z):
-        return np.linalg.matrix_rank(M(x, y, z))
-
-    samples = sample_surface(p)
-
-    #assert(null.shape[1] == 9)
-    #for (x, y, z) in p[0,:,:]:
-    #    print(null.shape, check(x,y,z))
-    base_rank = np.linalg.matrix_rank(M(100,100,100))
-    failed = False
-    for row in samples:
-        for (x,y,z) in row:
-            if np.linalg.matrix_rank(M(x,y,z)) == min(null.shape[0]/4, null.shape[1]):
-                print(base_rank, np.linalg.svd(M(x,y,z))[1])
-                failed = True
-                #panic("at the disco")
-
-    if failed:
-        print(p)
-        ax.scatter(samples[:,:,0], samples[:,:,1], samples[:,:,2])
-#ax.set_xlim(-3, 3)
-#ax.set_ylim(-3, 3)
-#ax.set_zlim(-1, 5)
-plt.show()
-'''
