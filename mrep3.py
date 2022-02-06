@@ -204,7 +204,7 @@ def draw_patches(patches, n=10):
         y = samples[:,:,1]
         z = samples[:,:,2]
         bounds.append([np.min(x), np.min(y), np.min(z), np.max(x), np.max(y), np.max(z)])
-        ax.scatter(samples[:,:,0], samples[:,:,1], samples[:,:,2])
+        ax.scatter(x, y, z)
     bounds = np.array(bounds)
     mins = np.min(bounds[:,:3], axis=0)
     maxs = np.max(bounds[:,3:], axis=0)

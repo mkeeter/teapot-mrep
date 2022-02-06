@@ -124,6 +124,8 @@ if SAVE_RAYTRACE_FIGS:
     max_search = np.zeros((image_size, image_size), dtype=int)
     actual_search = np.zeros((image_size, image_size), dtype=int)
 
+    from datetime import datetime
+    start = datetime.now()
     for x in range(out_dist.shape[0]):
         print("{}/{}".format(x + 1, out_dist.shape[0]))
         for y in range(out_dist.shape[1]):
@@ -135,9 +137,10 @@ if SAVE_RAYTRACE_FIGS:
             actual_search[out_dist.shape[0] - y - 1, x] = acs
             if index is not None:
                 out_dist[out_dist.shape[0] - y - 1, x] = dist
-                out_uv[out_dist.shape[0] - y - 1, x,:2] = [uv[0][0], uv[1][0]]
+                out_uv[out_dist.shape[0] - y - 1, x,:2] = uv
                 norm = surface_derivs(patches[index], u=uv[1], v=uv[0])
                 out_rgb[out_dist.shape[0] - y - 1, x,:] = norm
+    print(datetime.now() - start)
 
     def plot_colorbar(data, filename):
         cmap = matplotlib.cm.viridis
