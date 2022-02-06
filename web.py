@@ -10,7 +10,8 @@ import pylab as plt
 SAVE_CURVE_FIG = False
 SAVE_RANK_FIGS = False
 SAVE_CURVE_ANIM = False
-SAVE_PROJ_FIGS = True
+SAVE_PROJ_FIGS = False
+SAVE_RAYTRACE_FIGS = True
 
 def image_path(s):
     return os.path.join('../../Web/projects/mrep/', s)
@@ -101,5 +102,57 @@ if SAVE_PROJ_FIGS:
     plt.plot(*sample_curve(b).T, 'w')
     plt.colorbar()
     plt.show()
+
+if SAVE_RAYTRACE_FIGS:
+    from mrep3 import parse_bpt, prepare, raytrace, surface_derivs
+    with open('teapot.bpt') as f:
+        patches = parse_bpt(f.read())
+    implicit_patches = prepare(patches)
+
+    camera_pos = np.array([3,3,3])
+    camera_look = np.array([0.07,0.1,1.4])
+    camera_dir = camera_look - camera_pos
+    camera_dir = camera_dir / np.linalg.norm(camera_dir)
+    camera_up = np.array([0,0,1])
+    camera_x = np.cross(camera_dir, camera_up)
+    camera_x = camera_x / np.linalg.norm(camera_x)
+    camera_scale = 6
+    image_size = 400
+    out_dist = np.zeros((image_size, image_size), dtype=np.float64)
+    out_rgb = np.zeros((image_size, image_size, 3), dtype=np.float64)
+    out_uv = np.zeros((image_size, image_size, 3), dtype=np.float64)
+    max_search = np.zeros((image_size, image_size), dtype=int)
+    actual_search = np.zeros((image_size, image_size), dtype=int)
+
+    for x in range(out_dist.shape[0]):
+        print("{}/{}".format(x + 1, out_dist.shape[0]))
+        for y in range(out_dist.shape[1]):
+            pos = camera_pos + \
+                camera_x * (x/out_dist.shape[0] - 0.5) * camera_scale + \
+                camera_up * (y/out_dist.shape[1] - 0.5) * camera_scale
+            dist, index, uv, ms, acs = raytrace(pos, camera_dir, implicit_patches)
+            max_search[out_dist.shape[0] - y - 1, x] = ms
+            actual_search[out_dist.shape[0] - y - 1, x] = acs
+            if index is not None:
+                out_dist[out_dist.shape[0] - y - 1, x] = dist
+                out_uv[out_dist.shape[0] - y - 1, x,:2] = [uv[0][0], uv[1][0]]
+                norm = surface_derivs(patches[index], u=uv[1], v=uv[0])
+                out_rgb[out_dist.shape[0] - y - 1, x,:] = norm
+
+    def plot_colorbar(data, filename):
+        cmap = matplotlib.cm.viridis
+        plt.figure(figsize=(8, 6), dpi=150)
+        norm = matplotlib.colors.BoundaryNorm(range(0,9), cmap.N)
+        plt.imshow(data)
+        plt.colorbar(matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap))
+        plt.xticks([])
+        plt.yticks([])
+        plt.savefig(image_path(filename), bbox_inches='tight', transparent=True)
+        plt.close()
+    plot_colorbar(max_search, 'max_search.svg')
+    plot_colorbar(actual_search, 'actual_search.svg')
+
+    plt.imsave(image_path('patch_uv.png'), out_uv)
+    plt.imsave(image_path('final.png'), np.abs(out_rgb))
 
 pts = sample_curve(b)

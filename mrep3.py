@@ -254,6 +254,8 @@ def pencil_eigenvalues(A, B):
         eigs = eigvals(A, B)
         return eigs
     else:
+        print("!")
+        return []
         # https://arxiv.org/pdf/1805.07657.pdf is another alternative, maybe
         # faster than GUPTRI but requires you to put the matrix into KCF form
         # yourself, and I don't have time for that!
@@ -317,9 +319,11 @@ def raytrace(ray_origin, ray_dir, implicit_patches):
             targets.append((box_dist, i, M, bounds_min, bounds_max))
     targets.sort()
 
+    actual_search = 0
     for (box_dist, index, M, bounds_min, bounds_max) in targets:
         if box_dist > min_dist:
             continue
+        actual_search += 1
         eigs = pencil_eigenvalues(*parameterize_ray(M, ray_origin, ray_dir))
         for e in eigs:
             # Skip imaginary points points
@@ -346,7 +350,7 @@ def raytrace(ray_origin, ray_dir, implicit_patches):
             min_dist = dist
             hit_index = index
             hit_uv = uv
-    return min_dist, hit_index, hit_uv
+    return min_dist, hit_index, hit_uv, len(targets), actual_search
 
 # C function to accelerate ray-box testing
 import ctypes
@@ -389,34 +393,3 @@ def prepare(patches):
         bounds_max = p.reshape(-1, 3).max(axis=0)
         out.append((M, bounds_min, bounds_max))
     return out
-
-################################################################################
-
-with open('teapot.bpt') as f:
-    patches = parse_bpt(f.read())
-implicit_patches = prepare(patches)
-
-camera_pos = np.array([3,3,3])
-camera_look = np.array([0.07,0.1,1])
-camera_dir = camera_look - camera_pos
-camera_dir = camera_dir / np.linalg.norm(camera_dir)
-camera_up = np.array([0,0,1])
-camera_x = np.cross(camera_dir, camera_up)
-camera_x = camera_x / np.linalg.norm(camera_x)
-camera_scale = 6
-image_size = 400
-out_dist = np.zeros((image_size, image_size), dtype=np.float64)
-out_rgb = np.zeros((image_size, image_size, 3), dtype=np.float64)
-for x in range(out_dist.shape[0]):
-    print("{}/{}".format(x + 1, out_dist.shape[0]))
-    for y in range(out_dist.shape[1]):
-        pos = camera_pos + \
-            camera_x * (x/out_dist.shape[0] - 0.5) * camera_scale + \
-            camera_up * (y/out_dist.shape[1] - 0.5) * camera_scale
-        dist, index, uv = raytrace(pos, camera_dir, implicit_patches)
-        if index is not None:
-            out_dist[out_dist.shape[0] - y - 1, x] = dist
-            norm = surface_derivs(patches[index], u=uv[1], v=uv[0])
-            out_rgb[out_dist.shape[0] - y - 1, x,:] = norm
-plt.imshow(out_rgb)
-plt.show()
