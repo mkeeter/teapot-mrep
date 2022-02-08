@@ -14,7 +14,7 @@ SAVE_PROJ_FIGS = False
 SAVE_RAYTRACE_FIGS = True
 
 def image_path(s):
-    return os.path.join('../../Web/projects/mrep/', s)
+    return os.path.join('../../../Web/projects/mrep/', s)
 
 b = np.array([[0,0],[1,2],[2,1],[3,3]])
 
@@ -105,7 +105,7 @@ if SAVE_PROJ_FIGS:
 
 if SAVE_RAYTRACE_FIGS:
     from mrep3 import parse_bpt, prepare, raytrace, surface_derivs
-    with open('teapot.bpt') as f:
+    with open('../teapot.bpt') as f:
         patches = parse_bpt(f.read())
     implicit_patches = prepare(patches)
 
@@ -152,10 +152,10 @@ if SAVE_RAYTRACE_FIGS:
         plt.yticks([])
         plt.savefig(image_path(filename), bbox_inches='tight', transparent=True)
         plt.close()
-    plot_colorbar(max_search, 'max_search.svg')
-    plot_colorbar(actual_search, 'actual_search.svg')
+    #plot_colorbar(max_search, 'max_search.svg')
+    #plot_colorbar(actual_search, 'actual_search.svg')
 
-    plt.imsave(image_path('patch_uv.png'), out_uv)
-    plt.imsave(image_path('final.png'), np.abs(out_rgb))
+    #plt.imsave(image_path('patch_uv.png'), out_uv)
+    #plt.imsave(image_path('final.png'), np.abs(out_rgb))
 
 pts = sample_curve(b)
