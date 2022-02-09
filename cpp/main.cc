@@ -4,6 +4,9 @@
 #include <sstream>
 #include <cmath>
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 // Based on https://github.com/stulp/tutorials/blob/master/test.md
 #ifdef MALLOC_CHECKS
     #define EIGEN_RUNTIME_NO_MALLOC
@@ -345,13 +348,23 @@ MatrixXd& Pencil::eigenvalues(Scratch& scratch) const {
     solver.compute(A, B, false);
 
     // Issue #2436 documents that these return copies instead of reference
-    const auto& alphas = solver.betas();
+    const auto& alphas = solver.alphas();
     const auto& betas = solver.betas();
 
-    // XXX: how does this handle imaginary values?
-    auto& out = scratch.mat(alphas.rows(), 1);
+    size_t count = 0;
     for (long i=0; i < alphas.size(); ++i) {
-        out(i, 0) = alphas[i] / betas[i];
+        // XXX: epsilon?
+        if (alphas[i].imag() == 0.0) {
+            count++;
+        }
+    }
+
+    auto& out = scratch.mat(count, 1);
+    count = 0;
+    for (long i=0; i < alphas.size(); ++i) {
+        if (alphas[i].imag() == 0.0) {
+            out(count++, 0) = -alphas[i].real() / betas[i];
+        }
     }
     return out;
 }
@@ -433,16 +446,16 @@ struct Mrep {
     // Calculates the minimum distance from the given ray to the bounding
     // box of this m-rep, or a hit with valid = false if there is no hit.
     Hit min_distance(Vector3d ray_origin, Vector3d ray_dir) const {
-        bool any_hit = false;
-        double best_dist = -1.0;
+        Hit out;
         for (size_t axis=0; axis < 3; ++axis) {
             if (ray_dir[axis] == 0.0) {
                 // TODO: epsilon?
                 continue;
             }
+            // Check against min and max bounding box sides
             for (size_t i=0; i < 2; ++i) {
                 const double d = (bbox(axis, i) - ray_origin[axis]) / ray_dir[axis];
-                if (d >= 0 && (!any_hit || d < best_dist)) {
+                if (d >= 0 && (!out.valid || d < out.distance)) {
                     bool valid = true;
                     for (size_t j=0; j < 3; ++j) {
                         if (i == j) {
@@ -452,18 +465,13 @@ struct Mrep {
                         valid &= (p >= bbox(j, 0)) & (p <= bbox(j, 1));
                     }
                     if (valid) {
-                        best_dist = d;
-                        any_hit = true;
+                        out.distance = d;
+                        out.valid = true;
                     }
                 }
             }
         }
-        return Hit {
-            any_hit, // valid
-            best_dist, // distance
-            0, // index
-            Vector2d::Zero(), // UV
-        };
+        return out;
     }
 
     Vector2d preimages(Vector3d pos, Scratch& scratch) const {
@@ -514,7 +522,7 @@ Hit raytrace(Vector3d ray_origin, Vector3d ray_dir,
     size_t index = 0;
     for (const auto& m : mreps) {
         const auto h = m.min_distance(ray_origin, ray_dir);
-        todo.push_back(std::make_tuple(h.valid ? h.distance : -1.0, index));
+        todo.push_back(std::make_tuple(h.valid ? h.distance : -1.0, index++));
     }
 
     std::sort(todo.begin(), todo.end());
@@ -537,12 +545,11 @@ Hit raytrace(Vector3d ray_origin, Vector3d ray_dir,
         const auto index = std::get<1>(t);
         const auto& mrep = mreps[index];
 
-        // XXX allocation
         mrep.ray(ray_origin, ray_dir, scratch.pencil);
         scratch.pencil.reduce(scratch);
 
         const auto& eigs = scratch.pencil.eigenvalues(scratch);
-        for (int i=0; i < eigs.cols(); ++i) {
+        for (int i=0; i < eigs.rows(); ++i) {
             const double d = eigs(i, 0);
             if (d <= 0.0 || (hit.valid && d >= hit.distance)) {
                 continue;
@@ -594,6 +601,7 @@ MatrixXv render(const std::vector<Mrep>& mreps,
 
     MatrixXv out(image_size, image_size);
     for (size_t i=0; i < image_size; ++i) {
+        std::cout << i << "/" << image_size << std::endl;
         const Vector3d row_pos = camera_pos +
                 (i / double(image_size) - 0.5) * camera_scale * camera_x;
         for (size_t j=0; j < image_size; ++j) {
@@ -601,12 +609,11 @@ MatrixXv render(const std::vector<Mrep>& mreps,
                 (j / double(image_size) - 0.5) * camera_scale * camera_y;
             const auto h = raytrace(ray_pos, camera_dir, mreps, scratch);
             if (h.valid) {
-                std::cout << "X";
+                out(i, j) = Vector3d(1.0, 0.0, 0.0);
             } else {
-                std::cout << " ";
+                out(i, j) = Vector3d(0.0, 0.0, 0.0);
             }
         }
-        std::cout << "\n";
     }
 
     return out;
@@ -622,26 +629,9 @@ int main() {
         std::cerr << "Could not load teapot";
         exit(1);
     }
-
     std::stringstream buffer;
     buffer << file.rdbuf();
     const auto patches = parse_bpt(buffer);
-
-    auto mrep = Mrep::build(patches[0]);
-
-    auto pt = patches[0](0,0);
-    const auto dir = Vector3d{0,0,1};
-    pt -= 2.5 * dir;
-
-    Scratch scratch(std::max(mrep.rows(), mrep.cols()));
-    mrep.ray(pt, dir, scratch.pencil);
-    scratch.pencil.reduce(scratch);
-    scratch.pencil.eigenvalues(scratch);
-
-    std::cout << mrep.preimages(patches[0](0,0), scratch).transpose() << "\n";
-    std::cout << mrep.preimages(patches[0](0,3), scratch).transpose() << "\n";
-    std::cout << mrep.preimages(patches[0](3,0), scratch).transpose() << "\n";
-    std::cout << mrep.preimages(patches[0](3,3), scratch).transpose() << "\n";
 
     std::vector<Mrep> mreps;
     for (const auto& p : patches) {
@@ -650,5 +640,26 @@ int main() {
     const Vector3d camera_pos{3, 3, 3};
     const Vector3d camera_look{0.07, 0.1, 1.4};
     const double camera_scale = 6;
-    render(mreps, camera_pos, camera_look, camera_scale, 80);
+    const size_t image_size = 100;
+    const auto img = render(mreps, camera_pos, camera_look, camera_scale, image_size);
+    uint32_t* data = new uint32_t[image_size * image_size];
+    for (size_t i=0; i < image_size; ++i) {
+        for (size_t j=0; j < image_size; ++j) {
+            const auto rgb = img(j, image_size - i - 1);
+            if (rgb.norm() != 0.0) {
+                const uint8_t r = fabs(rgb.x()) * 255;
+                const uint8_t g = fabs(rgb.y()) * 255;
+                const uint8_t b = fabs(rgb.z()) * 255;
+                data[i * image_size + j] =
+                    ((uint32_t)r << 0) |
+                    ((uint32_t)g << 8) |
+                    ((uint32_t)b << 16)|
+                    (0xFF << 24);
+            } else {
+                data[i * image_size + j] = 0;
+            }
+        }
+    }
+    stbi_write_png("out.png", image_size, image_size, 4, data, image_size * 4);
+    delete [] data;
 }

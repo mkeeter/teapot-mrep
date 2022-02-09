@@ -224,12 +224,16 @@ def reduce_pencil_easy(A, B):
         tol = e1.max(axis=-1, keepdims=True) * max(B.shape[-2:]) * np.core.finfo(e1.dtype).eps
         if np.sum(e1 > tol) == B.shape[1]:
             break
+        r = np.sum(e1 > tol)
+        print("Got r", r)
 
         bv1 = np.matmul(B, vt1.T)
         i = np.min(np.where(np.max(np.abs(bv1), axis=0) < 1e-8))
+        assert(r == i)
         av1 = np.matmul(A, vt1.T)
         A1 = av1[:,i:]
         (u2, e2, vt2) = np.linalg.svd(A1)
+        print("e2:", e2)
         A = np.matmul(np.matmul(u2.T, A), vt1.T)
         B = np.matmul(np.matmul(u2.T, B), vt1.T)
         mask = np.abs(A) < 1e-8
@@ -242,6 +246,7 @@ def reduce_pencil_easy(A, B):
         B = B[i:,:j]
         if len(B.ravel()) == 0:
             return False
+        print(A.shape)
     if B.shape[0] == B.shape[1]:
         return A, B
     else:
@@ -254,7 +259,6 @@ def pencil_eigenvalues(A, B):
         eigs = eigvals(A, B)
         return eigs
     else:
-        print("!")
         return []
         # https://arxiv.org/pdf/1805.07657.pdf is another alternative, maybe
         # faster than GUPTRI but requires you to put the matrix into KCF form
@@ -281,11 +285,13 @@ def preimages(M, P):
     # Use least-squares to robustly solve for parameters
     A = np.hstack([v[1] * n[0::v[1]+1] + n[1::v[1]+1],
                    v[1] * n[v[1]::v[1] + 1] + n[v[1] - 1::v[1] + 1]])
+    print("A SIZE", A.shape)
     B = np.hstack([n[1::v[1] + 1], v[1] * n[v[1]::v[1] + 1]])
     u = np.linalg.lstsq(A.reshape(-1, 1), B.reshape(-1, 1), rcond=None)[0][0]
 
     A = np.hstack([v[0] * n[0:v[1] + 1] + n[v[1] + 1:2*(v[1] + 1)],
                    v[0] * n[-v[1] - 1:] + n[-2*(v[1] + 1): -(v[1] + 1)]])
+    print("A SIZE", A.shape)
     B = np.hstack([n[v[1] + 1:2*(v[1] + 1)], v[0] * n[-v[1] - 1:]])
     v = np.linalg.lstsq(A.reshape(-1, 1), B.reshape(-1, 1), rcond=None)[0][0]
 
@@ -393,3 +399,13 @@ def prepare(patches):
         bounds_max = p.reshape(-1, 3).max(axis=0)
         out.append((M, bounds_min, bounds_max))
     return out
+
+with open('../teapot.bpt') as f:
+    patches = parse_bpt(f.read())
+pt = np.copy(patches[0][0,0,:])
+mrep = build_M(patches[0])
+dir = np.array([0,0,1])
+pt -= dir
+A, B = parameterize_ray(mrep, pt, dir)
+reduce_pencil_easy(A, B)
+preimages(mrep, patches[0][0,0,:])
