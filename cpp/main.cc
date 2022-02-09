@@ -4,8 +4,6 @@
 #include <sstream>
 #include <cmath>
 
-#define MALLOC_CHECKS
-
 // Based on https://github.com/stulp/tutorials/blob/master/test.md
 #ifdef MALLOC_CHECKS
     #define EIGEN_RUNTIME_NO_MALLOC
@@ -24,7 +22,7 @@ using MatrixXv = Matrix<Vector3d, Dynamic, Dynamic>;
 
 static const size_t MAX_N_CHOOSE_K = 10;
 static double FACTORIAL[MAX_N_CHOOSE_K] = {0.0};
-static double N_CHOOSE_K[MAX_N_CHOOSE_K][MAX_N_CHOOSE_K] = {0.0};
+static double N_CHOOSE_K[MAX_N_CHOOSE_K][MAX_N_CHOOSE_K] = {{0.0}};
 
 // Builds the `N_CHOOSE_K` table for fast lookup
 void init() {
@@ -73,8 +71,8 @@ std::vector<MatrixXv> parse_bpt(std::stringstream& buffer) {
         const size_t m = std::stoi(line.substr(pos + 1));
 
         MatrixXv mat(n + 1, m + 1);
-        for (int j=0; j < n + 1; ++j) {
-            for (int k=0; k < m + 1; ++k) {
+        for (size_t j=0; j < n + 1; ++j) {
+            for (size_t k=0; k < m + 1; ++k) {
                 getline(buffer, line);
 
                 const double x = std::stod(line, &pos);
@@ -105,9 +103,9 @@ MatrixXd S_v(const MatrixXv& b, const Vector2i& v) {
     // This isn't the most efficient way to build the matrix, but it's a
     // one-for-one copy of the known-good Numpy code.
     for (int axis=0; axis < 4; ++axis) {
-        for (size_t k=0; k < v[0] + 1; ++k) {
+        for (int k=0; k < v[0] + 1; ++k) {
             const auto v_k = N_CHOOSE_K[v[0]][k];
-            for (size_t l=0; l < v[1] + 1; ++l) {
+            for (int l=0; l < v[1] + 1; ++l) {
                 const auto v_l = N_CHOOSE_K[v[1]][l];
                 for (size_t i=0; i < degree1 + 1; ++i) {
                     for (size_t j=0; j < degree2 + 1; ++j) {
@@ -131,9 +129,36 @@ MatrixXd S_v(const MatrixXv& b, const Vector2i& v) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct Scratch; // Forward declaration
+
+// Represents a ray as a matrix pencil A + t*B;
+struct Pencil {
+    MatrixXd mat_A;
+    MatrixXd mat_B;
+
+    // To avoid allocation, we work on blocks of the A and B matrix
+    size_t rows;
+    size_t cols;
+
+    // Allocates enough space for a size x size pencil, but doesn't lock
+    // it in (by leaving rows and cols at 0)
+    Pencil(size_t size)
+        : mat_A(size, size), mat_B(size, size), rows(0), cols(0)
+    {
+        // Nothing to do here
+    }
+
+    // Defined below after struct Scratch
+    bool reduce_step(Scratch& scratch);
+    void reduce(Scratch& scratch);
+    MatrixXd& eigenvalues(Scratch& scratch) const;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 struct Scratch {
-    Scratch(size_t rows, size_t cols)
-        : stride(std::max(cols, rows) + 1)
+    Scratch(size_t size)
+        : stride(size + 1), pencil(stride)
     {
         for (size_t r=0; r < stride; ++r) {
             for (size_t c=0; c < stride; ++c) {
@@ -215,122 +240,129 @@ struct Scratch {
     }
 
     const size_t stride;
+
+    // SVD solvers for various sides, indexed as rows + cols * stride
     std::vector<JacobiSVD<MatrixXd>> svdsU;
     std::vector<JacobiSVD<MatrixXd>> svdsV;
+
+    // SVD solver for single-column matrices (used for least-squares),
+    // indexed as 0-stride
     std::vector<JacobiSVD<MatrixXd>> svdsUV;
 
-    // Somewhat temporary, often returned as references
+    // Somewhat temporary, often returned as references,
+    // indexed as rows + cols * stride
     std::vector<MatrixXd> mats;
 
-    // Very temporary, used for intermediate evaluations
+    // Very temporary, used for intermediate evaluations,
+    // indexed as rows + cols * stride
     std::vector<MatrixXd> tmps;
 
+    // Array of eigenvalue solvers, indexed as 0-stride
     std::vector<GeneralizedEigenSolver<MatrixXd>> eigs;
+
+    Pencil pencil;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Represents a ray as a matrix pencil A + t*B;
-struct Pencil {
-    MatrixXd mat_A;
-    MatrixXd mat_B;
-    // To avoid allocation, we work on blocks of the A and B matrix
-    size_t rows;
-    size_t cols;
+// Performs an in-place reduction, modifying the upper-left corner
+// of A and B and updating rows and cols to reflect the new size.
+bool Pencil::reduce_step(Scratch& scratch) {
+    ENTERING_REAL_TIME_CRITICAL_CODE();
 
-    Pencil(size_t rows, size_t cols)
-        : mat_A(rows, cols), mat_B(rows, cols), rows(rows), cols(cols)
-    {
-        // Nothing to do here
+    const auto& A = mat_A.topLeftCorner(rows, cols);
+    const auto& B = mat_B.topLeftCorner(rows, cols);
+
+    const auto& svd1 = scratch.svdV(B);
+    const auto r = svd1.rank();
+    if (r == B.cols()) {
+        // B has full column rank, so we're done!
+        return false;
     }
+    const auto& A_V = scratch.matmul(A, svd1.matrixV());
 
-    // Performs an in-place reduction, modifying the upper-left corner
-    // of A and B and updating rows and cols to reflect the new size.
-    bool reduce_step(Scratch& scratch) {
+    // Compute SVD of A1
+    const auto& A1 = scratch.rightCols(A_V, B.cols() - r);
+    const auto& svd2 = scratch.svdU(A1);
+    assert(&svd1 != &svd2);
+
+    const size_t k = svd2.rank();
+
+    const auto& U2T = scratch.transpose(svd2.matrixU());
+
+    const auto& An = scratch.matmul(scratch.matmul(U2T, A), svd1.matrixV());
+    mat_A.topLeftCorner(k, r).noalias() = An.block(An.rows() - k, 0, k, r);
+
+    const auto& Bn = scratch.matmul(scratch.matmul(U2T, B), svd1.matrixV());
+    mat_B.topLeftCorner(k, r).noalias() = Bn.block(An.rows() - k, 0, k, r);
+
+    rows = k;
+    cols = r;
+
+    EXITING_REAL_TIME_CRITICAL_CODE();
+    return true;
+}
+
+void Pencil::reduce(Scratch& scratch) {
+    while (reduce_step(scratch)) {
+        // Keep going
+    }
+    if (rows != cols) {
         ENTERING_REAL_TIME_CRITICAL_CODE();
+        // In-place transpose of active region
+        for (unsigned r=0; r < rows; ++r) {
+            for (unsigned c=0; c < cols; ++c) {
+                double tmp = mat_A(r, c);
+                mat_A(r, c) = mat_A(c, r);
+                mat_A(c, r) = tmp;
 
-        const auto& A = mat_A.topLeftCorner(rows, cols);
-        const auto& B = mat_B.topLeftCorner(rows, cols);
-
-        const auto& svd1 = scratch.svdV(B);
-        const auto r = svd1.rank();
-        if (r == B.cols()) {
-            // B has full column rank, so we're done!
-            return false;
-        }
-        const auto& A_V = scratch.matmul(A, svd1.matrixV());
-
-        // Compute SVD of A1
-        const auto& A1 = scratch.rightCols(A_V, B.cols() - r);
-        const auto& svd2 = scratch.svdU(A1);
-        assert(&svd1 != &svd2);
-
-        const size_t k = svd2.rank();
-
-        const auto& U2T = scratch.transpose(svd2.matrixU());
-
-        const auto& An = scratch.matmul(scratch.matmul(U2T, A), svd1.matrixV());
-        const size_t q = An.rows() - k;
-        mat_A.topLeftCorner(k, r).noalias() = An.block(An.rows() - k, 0, k, r);
-
-        const auto& Bn = scratch.matmul(scratch.matmul(U2T, B), svd1.matrixV());
-        mat_B.topLeftCorner(k, r).noalias() = Bn.block(An.rows() - k, 0, k, r);
-
-        rows = k;
-        cols = r;
-
-        EXITING_REAL_TIME_CRITICAL_CODE();
-        return true;
-    }
-
-    void reduce(Scratch& scratch) {
-        while (reduce_step(scratch)) {
-            // Keep going
-        }
-        if (rows != cols) {
-            ENTERING_REAL_TIME_CRITICAL_CODE();
-            // In-place transpose of active region
-            for (unsigned r=0; r < rows; ++r) {
-                for (unsigned c=0; c < cols; ++c) {
-                    double tmp = mat_A(r, c);
-                    mat_A(r, c) = mat_A(c, r);
-                    mat_A(c, r) = tmp;
-
-                    tmp = mat_B(r, c);
-                    mat_B(r, c) = mat_B(c, r);
-                    mat_B(c, r) = tmp;
-                }
+                tmp = mat_B(r, c);
+                mat_B(r, c) = mat_B(c, r);
+                mat_B(c, r) = tmp;
             }
-            const size_t tmp = rows;
-            rows = cols;
-            cols = tmp;
-            EXITING_REAL_TIME_CRITICAL_CODE();
-            reduce(scratch);
         }
-    }
-
-    void eigenvalues(Scratch& scratch) const {
-        ENTERING_REAL_TIME_CRITICAL_CODE();
-        assert(rows == cols);
-        auto& A = scratch.mat(rows, rows);
-        A = mat_A.topLeftCorner(rows, cols);
-        auto& B = scratch.tmp(rows, rows);
-        B = mat_B.topLeftCorner(rows, cols);
-
-        auto& solver = scratch.eigs[rows];
+        const size_t tmp = rows;
+        rows = cols;
+        cols = tmp;
         EXITING_REAL_TIME_CRITICAL_CODE();
-
-        // Alas, it's not possible to disable all allocation in the solver
-        solver.compute(A, B, false);
-
-        // Issue #2436 documents that these return copies instead of reference
-        const auto& alphas = solver.betas();
-        const auto& betas = solver.betas();
-        for (size_t i=0; i < alphas.size(); ++i) {
-            std::cout << alphas[i] << " " << betas[i] << " " << alphas[i] / betas[i] << "\n";
-        }
+        reduce(scratch);
     }
+}
 
+// Returns real (or almost-real) positive eigenvalues
+MatrixXd& Pencil::eigenvalues(Scratch& scratch) const {
+    ENTERING_REAL_TIME_CRITICAL_CODE();
+    assert(rows == cols);
+    auto& A = scratch.mat(rows, rows);
+    A = mat_A.topLeftCorner(rows, cols);
+    auto& B = scratch.tmp(rows, rows);
+    B = mat_B.topLeftCorner(rows, cols);
+
+    auto& solver = scratch.eigs[rows];
+    EXITING_REAL_TIME_CRITICAL_CODE();
+
+    // Alas, it's not possible to disable all allocation in the solver
+    solver.compute(A, B, false);
+
+    // Issue #2436 documents that these return copies instead of reference
+    const auto& alphas = solver.betas();
+    const auto& betas = solver.betas();
+
+    // XXX: how does this handle imaginary values?
+    auto& out = scratch.mat(alphas.rows(), 1);
+    for (long i=0; i < alphas.size(); ++i) {
+        out(i, 0) = alphas[i] / betas[i];
+    }
+    return out;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+struct Hit {
+    bool valid = false;
+    double distance;
+    size_t index;
+    Vector2d uv;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -355,8 +387,8 @@ struct Mrep {
         Matrix<double, 3, 2> bbox;
         bbox.col(0) = b(0,0);
         bbox.col(1) = b(0,0);
-        for (size_t i=0; i < b.rows(); ++i) {
-            for (size_t j=0; j < b.cols(); ++j) {
+        for (long i=0; i < b.rows(); ++i) {
+            for (long j=0; j < b.cols(); ++j) {
                 bbox.col(0) = bbox.col(0).cwiseMin(b(i, j));
                 bbox.col(1) = bbox.col(1).cwiseMax(b(i, j));
             }
@@ -373,7 +405,8 @@ struct Mrep {
     }
 
     // Evaluates the m-rep into the given matrix at a particular position
-    void eval(Vector3d pos, MatrixXd& out) const {
+    template <typename T>
+    void eval(Vector3d pos, T out) const {
         ENTERING_REAL_TIME_CRITICAL_CODE();
         const size_t r = M.rows() / 4;
         out.noalias() = M.topRows(r);
@@ -384,22 +417,59 @@ struct Mrep {
     }
 
     // Builds a parameterized ray as a matrix pencil A + t*B
-    void ray(Vector3d ray_origin, Vector3d ray_dir, Pencil& r) const
-    {
+    void ray(Vector3d ray_origin, Vector3d ray_dir, Pencil& p) const {
         ENTERING_REAL_TIME_CRITICAL_CODE();
-        eval(ray_origin, r.mat_A);
+        const size_t r = rows();
+        const size_t c = cols();
+        eval(ray_origin, p.mat_A.topLeftCorner(r, c));
         ray_origin.noalias() += ray_dir;
-        eval(ray_origin, r.mat_B);
-        r.mat_B -= r.mat_A;
-        r.rows = rows();
-        r.cols = cols();
+        eval(ray_origin, p.mat_B.topLeftCorner(r, c));
+        p.mat_B.topLeftCorner(r, c) -= p.mat_A.topLeftCorner(r, c);
+        p.rows = r;
+        p.cols = c;
         EXITING_REAL_TIME_CRITICAL_CODE();
+    }
+
+    // Calculates the minimum distance from the given ray to the bounding
+    // box of this m-rep, or a hit with valid = false if there is no hit.
+    Hit min_distance(Vector3d ray_origin, Vector3d ray_dir) const {
+        bool any_hit = false;
+        double best_dist = -1.0;
+        for (size_t axis=0; axis < 3; ++axis) {
+            if (ray_dir[axis] == 0.0) {
+                // TODO: epsilon?
+                continue;
+            }
+            for (size_t i=0; i < 2; ++i) {
+                const double d = (bbox(axis, i) - ray_origin[axis]) / ray_dir[axis];
+                if (d >= 0 && (!any_hit || d < best_dist)) {
+                    bool valid = true;
+                    for (size_t j=0; j < 3; ++j) {
+                        if (i == j) {
+                            continue;
+                        }
+                        const double p = ray_origin[j] + d * ray_dir[j];
+                        valid &= (p >= bbox(j, 0)) & (p <= bbox(j, 1));
+                    }
+                    if (valid) {
+                        best_dist = d;
+                        any_hit = true;
+                    }
+                }
+            }
+        }
+        return Hit {
+            any_hit, // valid
+            best_dist, // distance
+            0, // index
+            Vector2d::Zero(), // UV
+        };
     }
 
     Vector2d preimages(Vector3d pos, Scratch& scratch) const {
         ENTERING_REAL_TIME_CRITICAL_CODE();
         auto& m = scratch.mat(rows(), cols());
-        eval(pos, m);
+        eval<MatrixXd&>(pos, m);
         const auto& svd = scratch.svdU(m);
         const auto n = svd.matrixU().rightCols<1>();
 
@@ -410,19 +480,21 @@ struct Mrep {
         const auto stride = v[1] + 1;
         for (size_t i=0; i < h/2; ++i) {
             const size_t offset = i * stride;
-            A(i, 0) = v[1] * n[offset] + n[1 + offset];
-            A(i + h/2, 0) = v[1] * n[v[1] + offset] + n[v[1] - 1 + offset];
+            const size_t j = i + h/2;
             B(i, 0) = n[1 + offset];
-            B(i + h/2, 0) = v[1] * n[v[1] + offset];
+            A(i, 0) = v[1] * n[offset] + B(i, 0);
+            B(j, 0) = v[1] * n[v[1] + offset];
+            A(j, 0) = B(j, 0) + n[v[1] - 1 + offset];
         }
         const double x = scratch.solve(A, B);
 
         const size_t offset = v[0] + 1;
         for (size_t i=0; i < h/2; ++i) {
-            A(i, 0) = v[0] * n[i] + n[i + offset];
-            A(i + h/2, 0) = v[0] * n[n.rows() - offset + i - 1] + n[n.rows() - 2*offset + i - 1];
+            const size_t j = i + h/2;
             B(i, 0) = n[i + offset];
-            B(i + h/2, 0) = v[0] * n[n.rows() - offset + i - 1];
+            A(i, 0) = v[0] * n[i] + B(i, 0);
+            B(j, 0) = v[0] * n[n.rows() - offset + i - 1];
+            A(j, 0) = B(j, 0) + n[n.rows() - 2*offset + i - 1];
         }
         const double y = scratch.solve(A, B);
 
@@ -430,6 +502,115 @@ struct Mrep {
         return Vector2d{x, y};
     }
 };
+
+////////////////////////////////////////////////////////////////////////////////
+
+Hit raytrace(Vector3d ray_origin, Vector3d ray_dir,
+             const std::vector<Mrep>& mreps,
+             Scratch& scratch)
+{
+    // Sort by minimum distance, skipping invalid options
+    std::vector<std::tuple<double, size_t>> todo;
+    size_t index = 0;
+    for (const auto& m : mreps) {
+        const auto h = m.min_distance(ray_origin, ray_dir);
+        todo.push_back(std::make_tuple(h.valid ? h.distance : -1.0, index));
+    }
+
+    std::sort(todo.begin(), todo.end());
+
+    // If every ray doesn't hit, then return immediately
+    Hit hit;
+    if (std::get<0>(todo[todo.size() - 1]) == -1.0) {
+        return hit;
+    }
+
+    for (auto& t : todo) {
+        const auto min_distance = std::get<0>(t);
+        if (min_distance == -1.0) {
+            // Skip non-hitting rays
+            continue;
+        } else if (hit.valid && min_distance >= hit.distance) {
+            // We're done if all future options have a farther min distance
+            break;
+        }
+        const auto index = std::get<1>(t);
+        const auto& mrep = mreps[index];
+
+        // XXX allocation
+        mrep.ray(ray_origin, ray_dir, scratch.pencil);
+        scratch.pencil.reduce(scratch);
+
+        const auto& eigs = scratch.pencil.eigenvalues(scratch);
+        for (int i=0; i < eigs.cols(); ++i) {
+            const double d = eigs(i, 0);
+            if (d <= 0.0 || (hit.valid && d >= hit.distance)) {
+                continue;
+            }
+            // Check that the collision is inside this patch's bounding box,
+            // before doing the expensive preimage computation
+            bool inside_bbox = true;
+            const Vector3d pt = ray_origin + d * ray_dir;
+            for (size_t axis=0; axis < 3; ++axis) {
+                inside_bbox &= (pt[axis] >= mrep.bbox(axis, 0)) &
+                               (pt[axis] <= mrep.bbox(axis, 1));
+            }
+            if (!inside_bbox) {
+                continue;
+            }
+
+            const Vector2d uv = mrep.preimages(pt, scratch);
+            if (uv.x() < 0.0 || uv.x() > 1.0 || uv.y() < 0.0 || uv.y() > 1.0) {
+                continue;
+            }
+
+            hit.valid = true;
+            hit.index = index;
+            hit.distance = d;
+            hit.uv = uv;
+        }
+    }
+
+    return hit;
+}
+
+MatrixXv render(const std::vector<Mrep>& mreps,
+                Vector3d camera_pos,
+                Vector3d camera_look,
+                double camera_scale,
+                size_t image_size)
+{
+    // Find a maximum bounding size for our scratch data
+    size_t s = 0;
+    for (const auto& m: mreps) {
+        s = std::max(s, std::max(m.rows(), m.cols()));
+    }
+    Scratch scratch(s);
+
+    const Vector3d camera_dir = (camera_look - camera_pos).normalized();
+    const Vector3d camera_up{0.0, 0.0, 1.0};
+    const Vector3d camera_x = camera_dir.cross(camera_up).normalized();
+    const Vector3d camera_y = camera_x.cross(camera_dir);
+
+    MatrixXv out(image_size, image_size);
+    for (size_t i=0; i < image_size; ++i) {
+        const Vector3d row_pos = camera_pos +
+                (i / double(image_size) - 0.5) * camera_scale * camera_x;
+        for (size_t j=0; j < image_size; ++j) {
+            const Vector3d ray_pos = row_pos +
+                (j / double(image_size) - 0.5) * camera_scale * camera_y;
+            const auto h = raytrace(ray_pos, camera_dir, mreps, scratch);
+            if (h.valid) {
+                std::cout << "X";
+            } else {
+                std::cout << " ";
+            }
+        }
+        std::cout << "\n";
+    }
+
+    return out;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -452,16 +633,22 @@ int main() {
     const auto dir = Vector3d{0,0,1};
     pt -= 2.5 * dir;
 
-    auto ray = Pencil(mrep.rows(), mrep.cols());
-    mrep.ray(pt, dir, ray);
-
-    Scratch scratch(mrep.rows(), mrep.cols());
-
-    ray.reduce(scratch);
-    ray.eigenvalues(scratch);
+    Scratch scratch(std::max(mrep.rows(), mrep.cols()));
+    mrep.ray(pt, dir, scratch.pencil);
+    scratch.pencil.reduce(scratch);
+    scratch.pencil.eigenvalues(scratch);
 
     std::cout << mrep.preimages(patches[0](0,0), scratch).transpose() << "\n";
     std::cout << mrep.preimages(patches[0](0,3), scratch).transpose() << "\n";
     std::cout << mrep.preimages(patches[0](3,0), scratch).transpose() << "\n";
     std::cout << mrep.preimages(patches[0](3,3), scratch).transpose() << "\n";
+
+    std::vector<Mrep> mreps;
+    for (const auto& p : patches) {
+        mreps.push_back(Mrep::build(p));
+    }
+    const Vector3d camera_pos{3, 3, 3};
+    const Vector3d camera_look{0.07, 0.1, 1.4};
+    const double camera_scale = 6;
+    render(mreps, camera_pos, camera_look, camera_scale, 80);
 }
