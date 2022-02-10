@@ -458,7 +458,7 @@ struct Mrep {
                 if (d >= 0 && (!out.valid || d < out.distance)) {
                     bool valid = true;
                     for (size_t j=0; j < 3; ++j) {
-                        if (i == j) {
+                        if (j == axis) {
                             continue;
                         }
                         const double p = ray_origin[j] + d * ray_dir[j];
